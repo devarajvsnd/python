@@ -1,0 +1,53 @@
+import fitz  # PyMuPDF for PDF processing
+import faiss
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from langchain.schema import Document
+
+# Step 1: Load and Process PDF
+def load_pdf(pdf_path):
+    doc = fitz.open(pdf_path)
+    text = "\n".join([page.get_text() for page in doc])
+    return text
+
+pdf_text = load_pdf("sample.pdf")
+
+# Step 2: Chunk Text
+chunk_size = 500
+chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
+
+# Convert chunks into LangChain Document format
+docs = [Document(page_content=chunk) for chunk in chunks]
+
+# Step 3: Generate Embeddings Using Open-Source Model
+embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+embeddings = embedding_model.encode([doc.page_content for doc in docs])
+
+# Step 4: Store Embeddings in FAISS
+dimension = embeddings.shape[1]
+index = faiss.IndexFlatL2(dimension)
+index.add(np.array(embeddings))
+
+# Step 5: Define Retrieval Function
+def retrieve_relevant_docs(query, top_k=2):
+    query_embedding = embedding_model.encode([query])
+    _, indices = index.search(np.array(query_embedding), top_k)
+    return [docs[i].page_content for i in indices[0]]
+
+# Step 6: Load Open-Source LLM (Mistral-7B-Instruct)
+model_name = "mistralai/Mistral-7B-Instruct"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto")
+
+qa_pipeline = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=200)
+
+# Step 7: Query the RAG Pipeline
+query = "What does the PDF talk about?"
+retrieved_docs = retrieve_relevant_docs(query)
+context = "\n".join(retrieved_docs)
+
+prompt = f"Context: {context}\n\nQuestion: {query}\nAnswer:"
+response = qa_pipeline(prompt)[0]["generated_text"]
+
+print("RAG Response:", response)
